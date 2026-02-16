@@ -79,6 +79,10 @@ hr.dv{border:none;border-top:1px dashed var(--bd);margin:20px 0}
 .st.c{background:#fef9c3;color:#a16207}
 .st.s{background:#dcfce7;color:#15803d}
 .st.e{background:#fef2f2;color:#dc2626}
+.ch-desc{font-size:.65rem;color:var(--gy);font-weight:400;margin-left:1px}
+.ch.sel .ch-desc{color:rgba(255,255,255,.75)}
+.adv-toggle{display:flex;align-items:center;gap:6px;font-size:.78rem;font-weight:500;color:var(--gy);cursor:pointer;padding:8px 0;user-select:none;-webkit-user-select:none}
+.adv-toggle:hover{color:var(--bk)}
 </style>
 </head>
 <body>
@@ -150,15 +154,22 @@ hr.dv{border:none;border-top:1px dashed var(--bd);margin:20px 0}
 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg>
 内容模式（多选）
 </div>
+<div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:8px" id="presetBar">
+<span class="ch" style="background:#f0f9ff;border-color:#93c5fd;color:#1d4ed8;font-size:.7rem" onclick="applyPreset('relax')">轻松模式</span>
+<span class="ch" style="background:#fefce8;border-color:#fcd34d;color:#a16207;font-size:.7rem" onclick="applyPreset('news')">资讯模式</span>
+<span class="ch" style="background:#f0fdf4;border-color:#86efac;color:#15803d;font-size:.7rem" onclick="applyPreset('all')">全功能体验</span>
+</div>
 <div class="cg" id="modeC">
-<span class="ch sel" data-m="STOIC" onclick="tc(this)">STOIC 斯多葛</span>
-<span class="ch sel" data-m="ROAST" onclick="tc(this)">ROAST 毒舌</span>
-<span class="ch" data-m="ZEN" onclick="tc(this)">ZEN 禅意</span>
-<span class="ch sel" data-m="DAILY" onclick="tc(this)">DAILY 每日</span>
-<span class="ch" data-m="BRIEFING" onclick="tc(this)">BRIEFING 简报</span>
-<span class="ch" data-m="ARTWALL" onclick="tc(this)">ARTWALL 画廊</span>
-<span class="ch" data-m="RECIPE" onclick="tc(this)">RECIPE 食谱</span>
-<span class="ch" data-m="FITNESS" onclick="tc(this)">FITNESS 健身</span>
+<span class="ch sel" data-m="STOIC" onclick="tc(this)"><b>STOIC</b> <span class="ch-desc">每日哲学箴言</span></span>
+<span class="ch sel" data-m="ROAST" onclick="tc(this)"><b>ROAST</b> <span class="ch-desc">犀利吐槽短句</span></span>
+<span class="ch" data-m="ZEN" onclick="tc(this)"><b>ZEN</b> <span class="ch-desc">一字禅</span></span>
+<span class="ch sel" data-m="DAILY" onclick="tc(this)"><b>DAILY</b> <span class="ch-desc">语录·书荐·冷知识</span></span>
+<span class="ch" data-m="BRIEFING" onclick="tc(this)"><b>BRIEFING</b> <span class="ch-desc">科技热榜简报</span></span>
+<span class="ch" data-m="ARTWALL" onclick="tc(this)"><b>ARTWALL</b> <span class="ch-desc">AI 黑白艺术画</span></span>
+<span class="ch" data-m="RECIPE" onclick="tc(this)"><b>RECIPE</b> <span class="ch-desc">早中晚三餐</span></span>
+<span class="ch" data-m="FITNESS" onclick="tc(this)"><b>FITNESS</b> <span class="ch-desc">居家训练计划</span></span>
+<span class="ch" data-m="POETRY" onclick="tc(this)"><b>POETRY</b> <span class="ch-desc">每日古诗词</span></span>
+<span class="ch" data-m="COUNTDOWN" onclick="tc(this)"><b>COUNTDOWN</b> <span class="ch-desc">重要日倒计时</span></span>
 </div>
 </div>
 
@@ -172,6 +183,31 @@ hr.dv{border:none;border-top:1px dashed var(--bd);margin:20px 0}
 <div class="pi" data-v="cycle" onclick="sp(this)">循环轮换</div>
 </div>
 </div>
+
+<div class="ps">
+<div class="pl">
+<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+刷新间隔
+</div>
+<div style="display:flex;align-items:center;gap:8px">
+<input type="number" class="inp" id="riH" min="0" max="24" value="1" style="width:60px;text-align:center" onchange="clampRI()">
+<span style="font-size:.85rem;color:var(--gy)">小时</span>
+<input type="number" class="inp" id="riM" min="0" max="59" value="0" style="width:60px;text-align:center" onchange="clampRI()">
+<span style="font-size:.85rem;color:var(--gy)">分钟</span>
+</div>
+<div style="font-size:.7rem;color:var(--gy);margin-top:4px">最少 10 分钟，最多 24 小时</div>
+</div>
+
+<!-- Advanced settings (collapsed by default) -->
+<div class="ps" style="margin-top:8px">
+<div class="adv-toggle" onclick="toggleAdvanced()">
+<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+<span>高级设置</span>
+<svg id="advArrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="transition:transform .2s"><path d="M6 9l6 6 6-6"/></svg>
+</div>
+</div>
+
+<div id="advPanel" class="hidden">
 
 <div class="ps">
 <div class="pl">
@@ -235,7 +271,7 @@ hr.dv{border:none;border-top:1px dashed var(--bd);margin:20px 0}
 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/></svg>
 地理位置
 </div>
-<input type="text" class="inp" id="cityIn" placeholder="城市名" value="杭州">
+<input type="text" class="inp" id="cityIn" placeholder="城市名（最多 20 字符）" value="杭州" maxlength="20">
 </div>
 
 <div class="ps">
@@ -253,19 +289,7 @@ AI 模型
 </select>
 </div>
 
-<div class="ps">
-<div class="pl">
-<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
-刷新间隔
-</div>
-<div style="display:flex;align-items:center;gap:8px">
-<input type="number" class="inp" id="riH" min="0" max="24" value="1" style="width:60px;text-align:center" onchange="clampRI()">
-<span style="font-size:.85rem;color:var(--gy)">小时</span>
-<input type="number" class="inp" id="riM" min="0" max="59" value="0" style="width:60px;text-align:center" onchange="clampRI()">
-<span style="font-size:.85rem;color:var(--gy)">分钟</span>
-</div>
-<div style="font-size:.7rem;color:var(--gy);margin-top:4px">最少 10 分钟，最多 24 小时</div>
-</div>
+</div><!-- /advPanel -->
 
 <button class="btn" style="margin-top:16px" onclick="saveCfg()"><span class="bt">保存配置并重启</span><div class="sp"></div></button>
 </div>
@@ -285,8 +309,12 @@ AI 模型
 <button onclick="closePortal()" style="flex:1;padding:6px;font-size:.75rem;background:#6b7280;color:#fff;border:none;border-radius:6px;cursor:pointer">✓ 关闭页面</button>
 </div>
 </div>
-<p class="cd" style="margin-top:12px">设备将在 <span id="cdN">30</span> 秒后自动重启</p>
-<div style="margin-top:16px"><button class="btn" onclick="resetP()" style="background:var(--bg);color:var(--bk);font-size:.8rem;padding:9px">重新配置</button></div>
+<div style="margin-top:12px;display:flex;gap:8px;justify-content:center">
+<button class="btn" onclick="doRestart()" style="width:auto;padding:9px 20px;font-size:.82rem">完成并重启</button>
+<button class="btn" onclick="cancelCountdown()" id="cdCancelBtn" style="width:auto;padding:9px 16px;font-size:.8rem;background:var(--bg);color:var(--bk)">取消自动重启</button>
+</div>
+<p class="cd" style="margin-top:8px"><span id="cdN">30</span> 秒后自动重启</p>
+<div style="margin-top:10px"><button class="btn" onclick="resetP()" style="background:var(--bg);color:var(--bk);font-size:.8rem;padding:9px">重新配置</button></div>
 </div>
 
 <hr class="dv">
@@ -345,6 +373,7 @@ var p=document.getElementById('pwIn').value;
 var st=document.getElementById('pSt'),btn=document.getElementById('cBtn');
 if(!s){st.className='st e';st.textContent='请选择或输入 WiFi';return;}
 if(!p){st.className='st e';st.textContent='请输入密码';return;}
+if(p.length<8){st.className='st e';st.textContent='密码至少 8 位';return;}
 btn.classList.add('ld');btn.disabled=true;
 st.className='st c';st.textContent='正在连接 '+s+' ...';
 
@@ -368,6 +397,24 @@ st.className='st e';st.textContent='请求失败，请重试';
 
 function tc(el){el.classList.toggle('sel')}
 function sp(el){var s=el.parentElement.children;for(var i=0;i<s.length;i++)s[i].classList.remove('sel');el.classList.add('sel')}
+
+function toggleAdvanced(){
+var p=document.getElementById('advPanel');
+var a=document.getElementById('advArrow');
+if(p.classList.contains('hidden')){p.classList.remove('hidden');a.style.transform='rotate(180deg)';}
+else{p.classList.add('hidden');a.style.transform='';}
+}
+
+function setModes(arr){
+document.querySelectorAll('#modeC .ch').forEach(function(c){
+if(arr.indexOf(c.dataset.m)>=0)c.classList.add('sel');else c.classList.remove('sel');
+});
+}
+function applyPreset(name){
+if(name==='relax'){setModes(['ZEN','DAILY','POETRY']);sp(document.querySelector('#rStrat .pi[data-v="random"]'));document.getElementById('riH').value=4;document.getElementById('riM').value=0;}
+else if(name==='news'){setModes(['BRIEFING','DAILY']);sp(document.querySelector('#rStrat .pi[data-v="cycle"]'));document.getElementById('riH').value=2;document.getElementById('riM').value=0;}
+else if(name==='all'){setModes(['STOIC','ROAST','ZEN','DAILY','BRIEFING','ARTWALL','RECIPE','FITNESS','POETRY','COUNTDOWN']);sp(document.querySelector('#rStrat .pi[data-v="random"]'));document.getElementById('riH').value=1;document.getElementById('riM').value=0;}
+}
 
 var llmModels={
 deepseek:[{v:'deepseek-chat',n:'DeepSeek Chat'}],
@@ -466,7 +513,7 @@ document.getElementById('pSt').className='st s';
 document.getElementById('pSt').textContent='配置已保存！';
 var c=30;document.getElementById('cdN').textContent=c;
 ctm=setInterval(function(){c--;document.getElementById('cdN').textContent=c;
-if(c<=0){clearInterval(ctm);document.getElementById('pSt').textContent='设备重启中...';}
+if(c<=0){clearInterval(ctm);ctm=null;doRestart();}
 },1000);
 }
 
@@ -484,6 +531,23 @@ document.body.removeChild(t);
 alert('链接已复制到剪贴板！');
 });
 }
+}
+
+function doRestart(){
+if(ctm)clearInterval(ctm);
+document.getElementById('pSt').className='st c';
+document.getElementById('pSt').textContent='设备重启中...';
+fetch('/restart',{method:'POST'}).catch(function(){});
+setTimeout(function(){
+document.body.innerHTML='<div style="text-align:center;padding:50px;font-family:sans-serif"><h2>设备正在重启</h2><p style="color:#888">可以关闭此页面了</p></div>';
+},1500);
+}
+
+function cancelCountdown(){
+if(ctm){clearInterval(ctm);ctm=null;}
+document.getElementById('cdN').textContent='--';
+document.querySelector('.cd').textContent='自动重启已取消';
+document.getElementById('cdCancelBtn').disabled=true;
 }
 
 function closePortal(){

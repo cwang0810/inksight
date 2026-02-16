@@ -12,6 +12,8 @@ from .briefing import render_briefing
 from .artwall import render_artwall
 from .recipe import render_recipe
 from .fitness import render_fitness
+from .poetry import render_poetry
+from .countdown import render_countdown
 
 __all__ = [
     "render_stoic",
@@ -23,4 +25,6 @@ __all__ = [
     "render_artwall",
     "render_recipe",
     "render_fitness",
+    "render_poetry",
+    "render_countdown",
 ]

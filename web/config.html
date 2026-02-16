@@ -85,6 +85,8 @@ h1{font-size:1.8rem;margin-bottom:8px}
 <span class="ch" data-m="ARTWALL" onclick="tc(this)">ARTWALL 画廊</span>
 <span class="ch" data-m="RECIPE" onclick="tc(this)">RECIPE 食谱</span>
 <span class="ch" data-m="FITNESS" onclick="tc(this)">FITNESS 健身</span>
+<span class="ch" data-m="POETRY" onclick="tc(this)">POETRY 诗词</span>
+<span class="ch" data-m="COUNTDOWN" onclick="tc(this)">COUNTDOWN 倒计时</span>
 </div>
 </div>
 
@@ -166,6 +168,13 @@ h1{font-size:1.8rem;margin-bottom:8px}
 <div class="fg">
 <label class="lbl">刷新间隔（分钟）</label>
 <input type="number" class="inp" id="interval" min="10" max="1440" placeholder="60">
+</div>
+
+<div class="fg" id="countdownSection">
+<label class="lbl">倒计时事件（COUNTDOWN 模式使用）</label>
+<div id="countdownEvents"></div>
+<button type="button" onclick="addCountdownEvent()" style="margin-top:8px;padding:6px 14px;font-size:.8rem;border:1px solid var(--bd);border-radius:6px;cursor:pointer;background:#fff">+ 添加事件</button>
+<div style="font-size:.7rem;color:var(--gy);margin-top:4px">最多 10 个事件，倒计时显示最近 3 个</div>
 </div>
 
 <button class="btn" onclick="saveConfig()">保存配置</button>
@@ -385,6 +394,9 @@ function fillForm(cfg) {
   document.getElementById('llmProvider').value = cfg.llm_provider || 'deepseek';
   updateModels();
   document.getElementById('llmModel').value = cfg.llm_model || 'deepseek-chat';
+
+  // Countdown events
+  fillCountdownEvents(cfg.countdown_events || cfg.countdownEvents || []);
 }
 
 async function saveConfig() {
@@ -423,7 +435,8 @@ async function saveConfig() {
     city: document.getElementById('city').value.trim() || '杭州',
     llmProvider: document.getElementById('llmProvider').value,
     llmModel: document.getElementById('llmModel').value,
-    refreshInterval: parseInt(document.getElementById('interval').value) || 60
+    refreshInterval: parseInt(document.getElementById('interval').value) || 60,
+    countdownEvents: getCountdownEvents()
   };
 
   try {
@@ -443,6 +456,42 @@ async function saveConfig() {
       // User clicked OK, do nothing
     }
   }
+}
+
+// Countdown events management
+function addCountdownEvent(name='', date='', type='countdown') {
+  const container = document.getElementById('countdownEvents');
+  const count = container.children.length;
+  if (count >= 10) { showAlert('最多添加 10 个事件', 'error'); return; }
+
+  const row = document.createElement('div');
+  row.style.cssText = 'display:flex;gap:6px;align-items:center;margin-bottom:6px';
+  row.innerHTML = `
+    <input type="text" class="inp cd-name" placeholder="事件名称" value="${name}" style="flex:2">
+    <input type="date" class="inp cd-date" value="${date}" style="flex:2">
+    <select class="sel cd-type" style="flex:1;padding:8px"><option value="countdown" ${type==='countdown'?'selected':''}>倒计时</option><option value="countup" ${type==='countup'?'selected':''}>正计日</option></select>
+    <button onclick="this.parentElement.remove()" style="padding:6px 10px;border:1px solid var(--bd);border-radius:6px;cursor:pointer;background:#fff;color:#dc2626;font-size:.8rem">✕</button>
+  `;
+  container.appendChild(row);
+}
+
+function getCountdownEvents() {
+  const events = [];
+  document.querySelectorAll('#countdownEvents > div').forEach(row => {
+    const name = row.querySelector('.cd-name').value.trim();
+    const date = row.querySelector('.cd-date').value;
+    const type = row.querySelector('.cd-type').value;
+    if (name && date) events.push({ name, date, type });
+  });
+  return events;
+}
+
+function fillCountdownEvents(events) {
+  const container = document.getElementById('countdownEvents');
+  container.innerHTML = '';
+  (events || []).forEach(evt => {
+    addCountdownEvent(evt.name || '', evt.date || '', evt.type || 'countdown');
+  });
 }
 
 // Initialize

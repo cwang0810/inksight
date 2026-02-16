@@ -57,6 +57,8 @@ MODE_ICON_MAP = {
     "ARTWALL": "book",
     "RECIPE": "book",
     "FITNESS": "book",
+    "POETRY": "book",
+    "COUNTDOWN": "book",
 }
 
 
@@ -275,6 +277,7 @@ DEFAULT_REFRESH_INTERVAL = 60  # minutes
 SUPPORTED_MODES = {
     "STOIC", "ROAST", "ZEN", "DAILY",
     "BRIEFING", "ARTWALL", "RECIPE", "FITNESS",
+    "POETRY", "COUNTDOWN",
 }
 
 # 可预缓存的基础模式（使用通用 generate_content + render 流程）

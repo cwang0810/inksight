@@ -38,10 +38,17 @@ async def init_db():
                 refresh_interval INTEGER DEFAULT 60,
                 llm_provider TEXT DEFAULT 'deepseek',
                 llm_model TEXT DEFAULT 'deepseek-chat',
+                countdown_events TEXT DEFAULT '[]',
                 is_active INTEGER DEFAULT 1,
                 created_at TEXT NOT NULL
             )
         """)
+        # Migration: add countdown_events column if missing
+        try:
+            await db.execute("ALTER TABLE configs ADD COLUMN countdown_events TEXT DEFAULT '[]'")
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
         await db.execute("CREATE INDEX IF NOT EXISTS idx_configs_mac ON configs(mac)")
         await db.commit()
 
@@ -58,11 +65,15 @@ async def save_config(mac: str, data: dict) -> int:
         await db.execute("UPDATE configs SET is_active = 0 WHERE mac = ?", (mac,))
 
         # Insert new config
+        countdown_events_json = json.dumps(
+            data.get("countdownEvents", []), ensure_ascii=False
+        )
         cursor = await db.execute(
             """INSERT INTO configs
                (mac, nickname, modes, refresh_strategy, character_tones,
-                language, content_tone, city, refresh_interval, llm_provider, llm_model, is_active, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)""",
+                language, content_tone, city, refresh_interval, llm_provider, llm_model,
+                countdown_events, is_active, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)""",
             (
                 mac,
                 data.get("nickname", ""),
@@ -75,6 +86,7 @@ async def save_config(mac: str, data: dict) -> int:
                 data.get("refreshInterval", DEFAULT_REFRESH_INTERVAL),
                 data.get("llmProvider", DEFAULT_LLM_PROVIDER),
                 data.get("llmModel", DEFAULT_LLM_MODEL),
+                countdown_events_json,
                 now,
             ),
         )
@@ -101,6 +113,12 @@ def _row_to_dict(row, columns) -> dict:
     d = dict(zip(columns, row))
     d["modes"] = [m for m in d["modes"].split(",") if m]
     d["character_tones"] = [t for t in d["character_tones"].split(",") if t]
+    # Parse countdown_events from JSON string
+    ce = d.get("countdown_events", "[]")
+    try:
+        d["countdownEvents"] = json.loads(ce) if isinstance(ce, str) else ce
+    except (json.JSONDecodeError, TypeError):
+        d["countdownEvents"] = []
     # Add mac field for cycle index tracking
     if "mac" not in d:
         d["mac"] = d.get("mac", "default")

@@ -375,6 +375,12 @@
                 <button class="persona-btn" data-persona="FITNESS" onclick="selectPersona(this)">
                   FITNESS<span class="label">健身计划</span>
                 </button>
+                <button class="persona-btn" data-persona="POETRY" onclick="selectPersona(this)">
+                  POETRY<span class="label">每日诗词</span>
+                </button>
+                <button class="persona-btn" data-persona="COUNTDOWN" onclick="selectPersona(this)">
+                  COUNTDOWN<span class="label">倒计时</span>
+                </button>
               </div>
             </div>
 
@@ -503,7 +509,7 @@
         generate();
       } else if (preset === 'all') {
         // Cycle through all modes
-        const modes = ['STOIC', 'ROAST', 'ZEN', 'DAILY', 'BRIEFING', 'ARTWALL', 'RECIPE', 'FITNESS'];
+        const modes = ['STOIC', 'ROAST', 'ZEN', 'DAILY', 'BRIEFING', 'ARTWALL', 'RECIPE', 'FITNESS', 'POETRY', 'COUNTDOWN'];
         for (const mode of modes) {
           selectedPersona = mode;
           // Highlight active button
