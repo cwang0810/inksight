@@ -19,6 +19,8 @@ from .content import (
     generate_artwall_content,
     generate_recipe_content,
     generate_fitness_content,
+    generate_poetry_content,
+    generate_countdown_content,
 )
 from .renderer import render_mode
 
@@ -92,6 +94,21 @@ async def _generate_content_for_persona(
             llm_provider=cfg.get("llm_provider", DEFAULT_LLM_PROVIDER),
             llm_model=cfg.get("llm_model", DEFAULT_LLM_MODEL),
         )
+
+    if persona == "POETRY":
+        return await generate_poetry_content(
+            date_str=date_str,
+            weather_str=weather_str,
+            festival=date_ctx.get("festival", ""),
+            character_tones=cfg.get("character_tones", []),
+            language=cfg.get("language", DEFAULT_LANGUAGE),
+            content_tone=cfg.get("content_tone", DEFAULT_CONTENT_TONE),
+            llm_provider=cfg.get("llm_provider", DEFAULT_LLM_PROVIDER),
+            llm_model=cfg.get("llm_model", DEFAULT_LLM_MODEL),
+        )
+
+    if persona == "COUNTDOWN":
+        return await generate_countdown_content(config=cfg)
 
     # Standard modes: STOIC, ROAST, ZEN, DAILY (+ fallback)
     return await generate_content(

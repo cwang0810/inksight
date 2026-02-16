@@ -10,6 +10,13 @@ import xml.etree.ElementTree as ET
 import logging
 import httpx
 from openai import AsyncOpenAI
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+    before_sleep_log,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +81,16 @@ PROMPTS = {
         "要求：内容丰富多样，每次推荐不同的内容，避免重复。只输出 JSON，不要其他内容。\n"
         "环境：{context}"
     ),
+    "POETRY": (
+        "你是一位古典文学专家。根据以下环境信息，推荐一首与当前季节、天气或节日相关的中国古诗词。\n"
+        '用 JSON 格式输出：{{"title": "诗名", "author": "朝代·作者", "lines": ["诗句1", "诗句2", ...], "note": "一句话赏析（20字以内）"}}\n'
+        "要求：\n"
+        "1. 选择经典诗词，涵盖唐诗、宋词、元曲等\n"
+        "2. 每次推荐不同的诗词，避免重复\n"
+        "3. 诗句完整呈现，每句单独一个元素\n"
+        "4. 只输出 JSON，不要其他内容\n"
+        "环境：{context}"
+    ),
 }
 
 
@@ -81,12 +98,19 @@ PROMPTS = {
 
 
 def _clean_json_response(text: str) -> str:
-    """Remove markdown code fences from LLM JSON responses."""
+    """Remove markdown code fences and extract JSON from LLM responses."""
     cleaned = text.strip()
+    # Remove markdown code fences (```json, ```JSON, ``` etc.)
     if cleaned.startswith("```"):
-        cleaned = cleaned.split("\n", 1)[1]
+        first_newline = cleaned.find("\n")
+        if first_newline != -1:
+            cleaned = cleaned[first_newline + 1:]
         cleaned = cleaned.rsplit("```", 1)[0]
-    return cleaned
+    # Try to extract a JSON object if surrounded by other text
+    match = re.search(r'\{[\s\S]*\}', cleaned)
+    if match:
+        cleaned = match.group(0)
+    return cleaned.strip()
 
 
 def _build_context_str(
@@ -160,6 +184,20 @@ def _get_client(
     return AsyncOpenAI(api_key=api_key, base_url=base_url), max_tokens
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=2, min=2, max=10),
+    retry=retry_if_exception_type((
+        ConnectionError,
+        TimeoutError,
+        httpx.ConnectError,
+        httpx.ReadTimeout,
+    )),
+    before_sleep=lambda rs: logger.warning(
+        f"[LLM] Retry {rs.attempt_number}/3 after {type(rs.outcome.exception()).__name__}..."
+    ),
+    reraise=True,
+)
 async def _call_llm(
     provider: str,
     model: str,
@@ -169,8 +207,8 @@ async def _call_llm(
 ) -> str:
     """Unified LLM call: create client, call API, return response text.
 
-    Raises ValueError when the API key is missing, and propagates
-    any other exception from the OpenAI client.
+    Retries up to 3 times with exponential backoff for transient errors.
+    Raises ValueError when the API key is missing (no retry).
     """
     client, default_max_tokens = _get_client(provider, model)
     response = await client.chat.completions.create(
@@ -184,10 +222,10 @@ async def _call_llm(
     finish_reason = response.choices[0].finish_reason
     usage = response.usage
     logger.info(
-        f"[LLM] {provider}/{model} ✓ tokens={usage.total_tokens}, finish={finish_reason}"
+        f"[LLM] {provider}/{model} tokens={usage.total_tokens}, finish={finish_reason}"
     )
     if finish_reason == "length":
-        logger.warning("[LLM] ⚠ Content truncated due to max_tokens limit")
+        logger.warning("[LLM] Content truncated due to max_tokens limit")
 
     return text
 
@@ -292,8 +330,18 @@ def _fallback_content(persona: str) -> dict:
                 {"title": "或检查网络连接", "score": 0},
             ],
             "ph_item": {"name": "Product Hunt", "tagline": "数据获取失败"},
+            "v2ex_items": [],
             "insight": "今日科技动态暂时无法获取，请稍后刷新。",
         }
+    elif persona == "POETRY":
+        return {
+            "title": "静夜思",
+            "author": "唐·李白",
+            "lines": ["床前明月光", "疑是地上霜", "举头望明月", "低头思故乡"],
+            "note": "千古思乡名篇",
+        }
+    elif persona == "COUNTDOWN":
+        return {"events": []}
     return {"quote": "...", "author": ""}
 
 
@@ -394,6 +442,29 @@ async def fetch_ph_top_product() -> dict:
     except Exception as e:
         logger.exception("[PH] Error fetching Product Hunt product")
         return {}
+
+
+# ── V2EX ─────────────────────────────────────────────────────
+
+
+async def fetch_v2ex_hot(limit: int = 3) -> list[dict]:
+    """获取 V2EX 热门话题"""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get("https://www.v2ex.com/api/topics/hot.json")
+            if resp.status_code == 200:
+                topics = resp.json()[:limit]
+                return [
+                    {
+                        "title": t.get("title", ""),
+                        "node": t.get("node", {}).get("title", ""),
+                    }
+                    for t in topics
+                ]
+            logger.error(f"[V2EX] Failed to fetch hot topics: {resp.status_code}")
+    except Exception as e:
+        logger.error(f"[V2EX] Error: {e}")
+    return []
 
 
 # ── Briefing mode ────────────────────────────────────────────
@@ -531,13 +602,14 @@ async def generate_briefing_content(
 
     logger.info("[BRIEFING] Starting content generation...")
 
-    # Fetch HN and PH concurrently
-    hn_stories, ph_product = await _asyncio.gather(
-        fetch_hn_top_stories(limit=3),
+    # Fetch HN, PH, and V2EX concurrently
+    hn_stories, ph_product, v2ex_topics = await _asyncio.gather(
+        fetch_hn_top_stories(limit=2),
         fetch_ph_top_product(),
+        fetch_v2ex_hot(limit=1),
     )
 
-    if not hn_stories and not ph_product:
+    if not hn_stories and not ph_product and not v2ex_topics:
         logger.error("[BRIEFING] All data sources failed, using fallback")
         return _fallback_content("BRIEFING")
 
@@ -553,11 +625,117 @@ async def generate_briefing_content(
     result = {
         "hn_items": hn_stories if hn_stories else [{"title": "数据获取失败", "score": 0}],
         "ph_item": ph_product if ph_product else {"name": "N/A", "tagline": ""},
+        "v2ex_items": v2ex_topics if v2ex_topics else [],
         "insight": insight,
     }
 
     logger.info("[BRIEFING] Content generation complete")
     return result
+
+
+# ── Poetry mode ──────────────────────────────────────────────
+
+
+async def generate_poetry_content(
+    date_str: str = "",
+    weather_str: str = "",
+    festival: str = "",
+    character_tones: list[str] | None = None,
+    language: str | None = None,
+    content_tone: str | None = None,
+    llm_provider: str = "deepseek",
+    llm_model: str = "deepseek-chat",
+    **kwargs,
+) -> dict:
+    """生成 POETRY 模式的内容"""
+    logger.info("[POETRY] Starting content generation...")
+
+    context = _build_context_str(date_str, weather_str, festival)
+    prompt = PROMPTS["POETRY"].format(context=context)
+
+    style = _build_style_instructions(character_tones, language, content_tone)
+    if style:
+        prompt += style
+
+    try:
+        text = await _call_llm(llm_provider, llm_model, prompt, temperature=0.8)
+        cleaned = _clean_json_response(text)
+        data = json.loads(cleaned)
+        logger.info(f"[POETRY] Generated: {data.get('title', '')}")
+
+        return {
+            "title": data.get("title", "静夜思"),
+            "author": data.get("author", "唐·李白"),
+            "lines": data.get("lines", ["床前明月光", "疑是地上霜", "举头望明月", "低头思故乡"]),
+            "note": data.get("note", "千古思乡名篇"),
+        }
+
+    except Exception as e:
+        logger.error(f"[POETRY] Failed: {e}")
+        return {
+            "title": "静夜思",
+            "author": "唐·李白",
+            "lines": ["床前明月光", "疑是地上霜", "举头望明月", "低头思故乡"],
+            "note": "千古思乡名篇",
+        }
+
+
+# ── Countdown mode ───────────────────────────────────────────
+
+
+async def generate_countdown_content(
+    config: dict | None = None,
+    **kwargs,
+) -> dict:
+    """生成 COUNTDOWN 模式的内容 — 纯日期计算，无需 LLM"""
+    logger.info("[COUNTDOWN] Computing countdown events...")
+
+    cfg = config or {}
+    raw_events = cfg.get("countdownEvents", [])
+
+    today = datetime.date.today()
+    computed_events = []
+
+    for evt in raw_events:
+        name = evt.get("name", "")
+        date_str = evt.get("date", "")
+        evt_type = evt.get("type", "countdown")
+
+        if not name or not date_str:
+            continue
+
+        try:
+            target = datetime.date.fromisoformat(date_str)
+        except (ValueError, TypeError):
+            continue
+
+        delta = (target - today).days
+
+        if evt_type == "countdown" and delta < 0:
+            continue
+        if evt_type == "countup":
+            delta = abs(delta)
+
+        computed_events.append({
+            "name": name,
+            "date": date_str,
+            "type": evt_type,
+            "days": abs(delta) if evt_type == "countdown" else delta,
+        })
+
+    # Sort: countdown events by nearest first, then countup
+    computed_events.sort(key=lambda e: (0 if e["type"] == "countdown" else 1, e["days"]))
+
+    if not computed_events:
+        # Provide default countdown events
+        new_year = datetime.date(today.year + 1, 1, 1)
+        days_to_ny = (new_year - today).days
+        computed_events = [
+            {"name": "元旦", "date": str(new_year), "type": "countdown", "days": days_to_ny},
+        ]
+
+    logger.info(f"[COUNTDOWN] Computed {len(computed_events)} events")
+    return {"events": computed_events}
 
 
 # ── Artwall mode ─────────────────────────────────────────────

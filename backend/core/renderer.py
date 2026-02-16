@@ -18,6 +18,8 @@ from .patterns import (
     render_artwall,
     render_recipe,
     render_fitness,
+    render_poetry,
+    render_countdown,
 )
 
 __all__ = [
@@ -30,6 +32,8 @@ __all__ = [
     "render_artwall",
     "render_recipe",
     "render_fitness",
+    "render_poetry",
+    "render_countdown",
     "render_mode",
     "image_to_bmp_bytes",
     "image_to_png_bytes",
@@ -109,6 +113,7 @@ def render_mode(
             hn_items=content["hn_items"],
             ph_item=content["ph_item"],
             insight=content["insight"],
+            v2ex_items=content.get("v2ex_items"),
         )
 
     if persona == "ARTWALL":
@@ -136,6 +141,21 @@ def render_mode(
             duration=content["duration"],
             exercises=content["exercises"],
             tip=content["tip"],
+        )
+
+    if persona == "POETRY":
+        return render_poetry(
+            **common,
+            title=content.get("title", ""),
+            author=content.get("author", ""),
+            lines=content.get("lines", []),
+            note=content.get("note", ""),
+        )
+
+    if persona == "COUNTDOWN":
+        return render_countdown(
+            **common,
+            events=content.get("events", []),
         )
 
     # Fallback: treat as STOIC

@@ -10,8 +10,13 @@
 #include "../data/portal_html.h"
 
 // ── Portal state ────────────────────────────────────────────
-bool portalActive  = false;
-bool wifiConnected = false;
+bool portalActive    = false;
+bool wifiConnected   = false;
+
+static bool     wifiConnecting = false;
+static String   lastWifiError  = "";
+static bool     pendingRestart = false;
+static unsigned long restartAtMillis = 0;
 
 static WebServer webServer(80);
 static DNSServer dnsServer;
@@ -26,7 +31,37 @@ static const int PORTAL_MAX_CONFIG = 2048;
 static String sanitizeInput(const String &input, int maxLen) {
     String result = input.substring(0, maxLen);
     result.trim();
+    result.replace("<", "");
+    result.replace(">", "");
     return result;
+}
+
+static String sanitizeTextInput(const String &input, int maxLen) {
+    String result = sanitizeInput(input, maxLen);
+    result.replace("\"", "");
+    result.replace("'", "");
+    result.replace("&", "");
+    result.replace("\\", "");
+    return result;
+}
+
+static String sanitizeSSID(const String &input) {
+    String result = sanitizeTextInput(input, PORTAL_MAX_SSID);
+    // Remove control characters (keep printable ASCII + UTF-8 multibyte)
+    String cleaned;
+    for (unsigned int i = 0; i < result.length(); i++) {
+        char c = result.charAt(i);
+        if (c >= 32 || (c & 0x80)) cleaned += c;
+    }
+    return cleaned;
+}
+
+static bool isValidJson(const String &s) {
+    // Minimal check: starts with { and ends with }, contains "modes"
+    if (s.length() < 2) return false;
+    if (s.charAt(0) != '{' || s.charAt(s.length() - 1) != '}') return false;
+    if (s.indexOf("\"modes\"") < 0) return false;
+    return true;
 }
 
 static bool isValidUrl(const String &url) {
@@ -83,10 +118,27 @@ void startCaptivePortal() {
         webServer.send(200, "application/json", json);
     });
 
-    // ── Route: Save WiFi credentials ────────────────────────
+    // ── Route: WiFi connection status ──────────────────────────
+    webServer.on("/status", HTTP_GET, []() {
+        String json = "{\"state\":\"";
+        if (WiFi.status() == WL_CONNECTED) {
+            json += "connected\",\"ip\":\"" + WiFi.localIP().toString() + "\"";
+        } else if (wifiConnecting) {
+            json += "connecting\"";
+        } else if (lastWifiError.length() > 0) {
+            json += "failed\",\"error\":\"" + lastWifiError + "\"";
+        } else {
+            json += "idle\"";
+        }
+        json += "}";
+        webServer.sendHeader("Access-Control-Allow-Origin", "*");
+        webServer.send(200, "application/json", json);
+    });
+
+    // ── Route: Save WiFi credentials (async with polling) ────
     webServer.on("/save_wifi", HTTP_POST, []() {
-        String ssid = sanitizeInput(webServer.arg("ssid"), PORTAL_MAX_SSID);
-        String pass = sanitizeInput(webServer.arg("pass"), PORTAL_MAX_PASS);
+        String ssid = sanitizeSSID(webServer.arg("ssid"));
+        String pass = sanitizeTextInput(webServer.arg("pass"), PORTAL_MAX_PASS);
 
         if (ssid.length() == 0) {
             webServer.send(200, "application/json", "{\"ok\":false,\"msg\":\"SSID empty\"}");
@@ -94,6 +146,8 @@ void startCaptivePortal() {
         }
 
         Serial.printf("Portal: connecting to %s\n", ssid.c_str());
+        wifiConnecting = true;
+        lastWifiError  = "";
 
         WiFi.mode(WIFI_AP_STA);
         WiFi.begin(ssid.c_str(), pass.c_str());
@@ -103,16 +157,31 @@ void startCaptivePortal() {
             delay(300);
         }
 
+        wifiConnecting = false;
+
         if (WiFi.status() == WL_CONNECTED) {
             saveWiFiConfig(ssid, pass);
             wifiConnected = true;
+            lastWifiError = "";
             Serial.printf("WiFi OK  IP=%s\n", WiFi.localIP().toString().c_str());
             webServer.send(200, "application/json", "{\"ok\":true}");
         } else {
+            uint8_t reason = WiFi.status();
+            if (reason == WL_NO_SSID_AVAIL) {
+                lastWifiError = "NO_SSID";
+            } else if (reason == WL_CONNECT_FAILED) {
+                lastWifiError = "AUTH_FAIL";
+            } else {
+                lastWifiError = "TIMEOUT";
+            }
             WiFi.disconnect();
             WiFi.mode(WIFI_AP);
+            String msg;
+            if (lastWifiError == "NO_SSID")    msg = "找不到该网络";
+            else if (lastWifiError == "AUTH_FAIL") msg = "密码错误";
+            else                                   msg = "连接超时，请重试";
             webServer.send(200, "application/json",
-                           "{\"ok\":false,\"msg\":\"连接失败，请检查密码\"}");
+                           "{\"ok\":false,\"msg\":\"" + msg + "\"}");
         }
     });
 
@@ -123,27 +192,24 @@ void startCaptivePortal() {
             webServer.send(200, "application/json", "{\"ok\":false,\"msg\":\"Config empty\"}");
             return;
         }
+        if (!isValidJson(config)) {
+            webServer.send(200, "application/json", "{\"ok\":false,\"msg\":\"Invalid config format\"}");
+            return;
+        }
         saveUserConfig(config);
         Serial.println("Config saved to NVS");
         webServer.send(200, "application/json", "{\"ok\":true}");
 
         // Post config to backend if connected
-        delay(500);
         if (wifiConnected) {
+            delay(500);
             postConfigToBackend();
         }
 
-        // Keep serving requests for 35 seconds before restart
-        Serial.println("Scheduling restart in 35 seconds...");
-        unsigned long restartTime = millis() + 35000;
-        while (millis() < restartTime) {
-            dnsServer.processNextRequest();
-            webServer.handleClient();
-            delay(10);
-        }
-
-        Serial.println("Restarting now...");
-        ESP.restart();
+        // Schedule a deferred restart (30s) — front-end can call /restart sooner
+        pendingRestart  = true;
+        restartAtMillis = millis() + 30000;
+        Serial.println("Restart scheduled in 30 seconds (or earlier via /restart)");
     });
 
     // ── Route: Manual restart ───────────────────────────────
@@ -187,4 +253,11 @@ void startCaptivePortal() {
 void handlePortalClients() {
     dnsServer.processNextRequest();
     webServer.handleClient();
+
+    // Deferred restart after config save
+    if (pendingRestart && millis() >= restartAtMillis) {
+        Serial.println("Deferred restart triggered");
+        delay(200);
+        ESP.restart();
+    }
 }

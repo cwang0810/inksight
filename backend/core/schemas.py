@@ -34,7 +34,7 @@ class ConfigRequest(BaseModel):
     modes: list[str] = Field(
         default=["STOIC"],
         min_length=1,
-        max_length=8,
+        max_length=10,
         description="启用的内容模式列表",
     )
     refreshStrategy: str = Field(
@@ -51,6 +51,11 @@ class ConfigRequest(BaseModel):
     )
     llmProvider: str = Field(default="deepseek", description="LLM 提供商")
     llmModel: str = Field(default="deepseek-chat", max_length=50, description="LLM 模型名")
+    countdownEvents: list[dict] = Field(
+        default_factory=list,
+        max_length=10,
+        description="倒计时事件列表 [{name, date, type}]",
+    )
 
     @field_validator("mac")
     @classmethod

@@ -4,7 +4,7 @@ ARTWALL 模式 - AI 艺术画廊
 """
 
 import logging
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageEnhance
 
 logger = logging.getLogger(__name__)
 
@@ -66,8 +66,11 @@ def render_artwall(
                 target_size_h = 220
                 artwork_img = artwork_img.resize((target_size_w, target_size_h), Image.LANCZOS)
                 
-                threshold = 128
-                artwork_img = artwork_img.point(lambda x: 0 if x < threshold else 255, '1')
+                # Enhance contrast before dithering for better e-ink rendering
+                artwork_img = ImageEnhance.Contrast(artwork_img).enhance(1.3)
+                
+                # Floyd-Steinberg dithering (Pillow built-in) for superior halftone
+                artwork_img = artwork_img.convert("1")
                 
                 img_x = (SCREEN_W - target_size_w) // 2
                 img_y = (SCREEN_H - target_size_h) // 2
