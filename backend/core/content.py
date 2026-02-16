@@ -1,0 +1,810 @@
+from __future__ import annotations
+
+import datetime
+import json
+import os
+import re
+import traceback
+import xml.etree.ElementTree as ET
+
+import httpx
+from openai import AsyncOpenAI
+
+try:
+    import dashscope
+    from dashscope import MultiModalConversation
+except ImportError:
+    dashscope = None
+    MultiModalConversation = None
+
+# LLM Provider configurations
+LLM_CONFIGS = {
+    "deepseek": {
+        "base_url": "https://api.deepseek.com/v1",
+        "models": {"deepseek-chat": {"name": "DeepSeek Chat", "max_tokens": 1024}},
+    },
+    "aliyun": {
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "models": {
+            "qwen-max": {"name": "通义千问 Max", "max_tokens": 1024},
+            "qwen-plus": {"name": "通义千问 Plus", "max_tokens": 1024},
+            "qwen-turbo": {"name": "通义千问 Turbo", "max_tokens": 1024},
+            "deepseek-v3": {"name": "DeepSeek V3", "max_tokens": 1024},
+            "kimi-2.5": {"name": "Kimi 2.5", "max_tokens": 1024},
+            "glm-4-plus": {"name": "智谱 GLM-4 Plus", "max_tokens": 1024},
+        },
+    },
+    "moonshot": {
+        "base_url": "https://api.moonshot.cn/v1",
+        "models": {
+            "moonshot-v1-8k": {"name": "Kimi K1.5", "max_tokens": 1024},
+            "moonshot-v1-32k": {"name": "Kimi K1.5 32K", "max_tokens": 1024},
+            "kimi-k2-turbo-preview": {"name": "Kimi K2 Turbo", "max_tokens": 1024},
+        },
+    },
+}
+
+PROMPTS = {
+    "STOIC": (
+        "你是一位斯多葛哲学导师。根据以下环境信息，生成一句简短的斯多葛哲学语录，"
+        "风格庄重、内省，适合刻在石碑上。只输出语录本身和作者，用 | 分隔。\n"
+        "环境：{context}"
+    ),
+    "ROAST": (
+        "你是一个毒舌 AI 助手，擅长黑色幽默和反讽。根据以下环境信息，生成一句犀利的吐槽短句，"
+        "让人破防但又忍不住笑。只输出短句本身，不要加引号。\n"
+        "环境：{context}"
+    ),
+    "ZEN": (
+        "你是一位禅宗大师。只输出一个最能代表当下状态的汉字，不要任何其他内容。\n"
+        "环境：{context}"
+    ),
+    "DAILY": (
+        "你是一位博学的每日推荐助手。根据以下环境信息，生成一份每日推荐内容，用 JSON 格式输出，包含：\n"
+        "1. quote: 一句语录（中文，20字以内，来源不限：哲学、文学、科学、历史、电影等均可）\n"
+        "2. author: 语录作者\n"
+        "3. book_title: 推荐一本书（书名用书名号，领域不限，每次推荐不同的书）\n"
+        '4. book_author: 书的作者 + " 著"\n'
+        "5. book_desc: 一句话描述这本书（25字以内）\n"
+        "6. tip: 一条有趣的冷知识或实用小贴士（30字以内，话题不限）\n"
+        "7. season_text: 当前节气或季节的一句话描述（10字以内）\n"
+        "要求：内容丰富多样，每次推荐不同的内容，避免重复。只输出 JSON，不要其他内容。\n"
+        "环境：{context}"
+    ),
+}
+
+
+# ── Shared helpers ───────────────────────────────────────────
+
+
+def _clean_json_response(text: str) -> str:
+    """Remove markdown code fences from LLM JSON responses."""
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("\n", 1)[1]
+        cleaned = cleaned.rsplit("```", 1)[0]
+    return cleaned
+
+
+def _build_context_str(
+    date_str: str,
+    weather_str: str,
+    festival: str = "",
+    daily_word: str = "",
+    upcoming_holiday: str = "",
+    days_until: int = 0,
+) -> str:
+    parts = [f"日期: {date_str}", f"天气: {weather_str}"]
+    if festival:
+        parts.append(f"节日: {festival}")
+    if upcoming_holiday and days_until > 0:
+        parts.append(f"{days_until}天后是{upcoming_holiday}")
+    if daily_word:
+        parts.append(f"每日一词: {daily_word}")
+    return ", ".join(parts)
+
+
+def _build_style_instructions(
+    character_tones: list[str] | None, language: str | None, content_tone: str | None
+) -> str:
+    parts = []
+
+    if character_tones:
+        names = "、".join(character_tones)
+        parts.append(f"请模仿「{names}」的说话风格和语气来表达")
+
+    lang_map = {"zh": "中文", "en": "英文", "mixed": "中英混合"}
+    if language and language != "zh":
+        parts.append(f"请使用{lang_map.get(language, '中文')}为主要语言")
+
+    tone_map = {
+        "positive": "积极鼓励、温暖向上",
+        "neutral": "中性克制、理性平和",
+        "deep": "深沉内省、富有哲理",
+        "humor": "轻松幽默、诙谐有趣",
+    }
+    if content_tone and content_tone != "neutral":
+        parts.append(f"整体调性要{tone_map.get(content_tone, '中性克制')}")
+
+    if not parts:
+        return ""
+    return "\n额外风格要求：" + "；".join(parts) + "。"
+
+
+def _get_client(
+    provider: str = "deepseek", model: str = "deepseek-chat"
+) -> tuple[AsyncOpenAI, int]:
+    """Get OpenAI client for specified provider and return max_tokens"""
+    api_key_map = {
+        "deepseek": "DEEPSEEK_API_KEY",
+        "aliyun": "DASHSCOPE_API_KEY",
+        "moonshot": "MOONSHOT_API_KEY",
+    }
+
+    env_key = api_key_map.get(provider, "DEEPSEEK_API_KEY")
+    api_key = os.getenv(env_key, "")
+
+    if not api_key or api_key.startswith("sk-your-"):
+        raise ValueError(
+            f"Missing or invalid API key for {provider}. Please set {env_key} in .env file."
+        )
+
+    config = LLM_CONFIGS.get(provider, LLM_CONFIGS["deepseek"])
+    base_url = config["base_url"]
+    model_config = config["models"].get(model, {"max_tokens": 120})
+    max_tokens = model_config["max_tokens"]
+
+    return AsyncOpenAI(api_key=api_key, base_url=base_url), max_tokens
+
+
+async def _call_llm(
+    provider: str,
+    model: str,
+    prompt: str,
+    temperature: float = 0.8,
+    max_tokens: int | None = None,
+) -> str:
+    """Unified LLM call: create client, call API, return response text.
+
+    Raises ValueError when the API key is missing, and propagates
+    any other exception from the OpenAI client.
+    """
+    client, default_max_tokens = _get_client(provider, model)
+    response = await client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=max_tokens or default_max_tokens,
+        temperature=temperature,
+    )
+    text = response.choices[0].message.content.strip()
+
+    finish_reason = response.choices[0].finish_reason
+    usage = response.usage
+    print(
+        f"[LLM] {provider}/{model} ✓ tokens={usage.total_tokens}, finish={finish_reason}"
+    )
+    if finish_reason == "length":
+        print("[LLM] ⚠ Content truncated due to max_tokens limit")
+
+    return text
+
+
+# ── Core content generation ──────────────────────────────────
+
+
+async def generate_content(
+    persona: str,
+    date_str: str,
+    weather_str: str,
+    character_tones: list[str] | None = None,
+    language: str | None = None,
+    content_tone: str | None = None,
+    festival: str = "",
+    daily_word: str = "",
+    upcoming_holiday: str = "",
+    days_until_holiday: int = 0,
+    llm_provider: str = "deepseek",
+    llm_model: str = "deepseek-chat",
+) -> dict:
+    context = _build_context_str(
+        date_str,
+        weather_str,
+        festival,
+        daily_word,
+        upcoming_holiday,
+        days_until_holiday,
+    )
+    prompt = PROMPTS.get(persona, PROMPTS["STOIC"]).format(context=context)
+
+    style = _build_style_instructions(character_tones, language, content_tone)
+    if style:
+        prompt += style
+
+    print(f"[LLM] Calling {llm_provider}/{llm_model} for persona={persona}")
+
+    try:
+        text = await _call_llm(llm_provider, llm_model, prompt, temperature=0.8)
+    except ValueError as e:
+        print(f"[LLM] ✗ FAILED - ValueError: {e}")
+        return _fallback_content(persona)
+    except Exception as e:
+        print(f"[LLM] ✗ FAILED - {type(e).__name__}: {e}")
+        return _fallback_content(persona)
+
+    if persona == "STOIC":
+        parts = text.split("|")
+        quote = parts[0].strip().strip('"').strip("\u201c").strip("\u201d")
+        author = parts[1].strip() if len(parts) > 1 else "Unknown"
+        return {"quote": quote, "author": author}
+    elif persona == "ROAST":
+        return {"quote": text}
+    elif persona == "ZEN":
+        return {"word": text[:1]}
+    elif persona == "DAILY":
+        try:
+            cleaned = _clean_json_response(text)
+            data = json.loads(cleaned)
+            return {
+                "quote": data.get("quote", ""),
+                "author": data.get("author", ""),
+                "book_title": data.get("book_title", ""),
+                "book_author": data.get("book_author", ""),
+                "book_desc": data.get("book_desc", ""),
+                "tip": data.get("tip", ""),
+                "season_text": data.get("season_text", ""),
+            }
+        except (json.JSONDecodeError, KeyError) as e:
+            print(f"[LLM] ✗ FAILED to parse DAILY JSON: {e}")
+            print(f"[LLM] Raw response: {text[:200]}...")
+            return _fallback_content("DAILY")
+
+    return {"quote": text, "author": ""}
+
+
+def _fallback_content(persona: str) -> dict:
+    if persona == "STOIC":
+        return {
+            "quote": "The impediment to action advances action. What stands in the way becomes the way.",
+            "author": "Marcus Aurelius",
+        }
+    elif persona == "ROAST":
+        return {"quote": "服务器也累了，和你一样需要休息。"}
+    elif persona == "ZEN":
+        return {"word": "静"}
+    elif persona == "DAILY":
+        return {
+            "quote": "阻碍行动的障碍，本身就是行动的路。",
+            "author": "马可·奥勒留",
+            "book_title": "《沉思录》",
+            "book_author": "马可·奥勒留 著",
+            "book_desc": "罗马帝王的自省笔记，斯多葛哲学的经典之作。",
+            "tip": "冬季干燥，记得多喝水，保持室内适当湿度。",
+            "season_text": "立春已过，万物生长。",
+        }
+    elif persona == "BRIEFING":
+        return {
+            "hn_items": [
+                {"title": "Hacker News API 暂时不可用", "score": 0},
+                {"title": "请稍后重试", "score": 0},
+                {"title": "或检查网络连接", "score": 0},
+            ],
+            "ph_item": {"name": "Product Hunt", "tagline": "数据获取失败"},
+            "insight": "今日科技动态暂时无法获取，请稍后刷新。",
+        }
+    return {"quote": "...", "author": ""}
+
+
+# ── Hacker News & Product Hunt ───────────────────────────────
+
+
+async def fetch_hn_top_stories(limit: int = 3) -> list[dict]:
+    """获取 Hacker News 热榜 Top N"""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                "https://hacker-news.firebaseio.com/v0/topstories.json"
+            )
+            if resp.status_code != 200:
+                print(f"[HN] Failed to fetch top stories: {resp.status_code}")
+                return []
+
+            story_ids = resp.json()[:limit]
+            stories = []
+
+            for story_id in story_ids:
+                story_resp = await client.get(
+                    f"https://hacker-news.firebaseio.com/v0/item/{story_id}.json"
+                )
+                if story_resp.status_code == 200:
+                    story = story_resp.json()
+                    stories.append(
+                        {
+                            "title": story.get("title", "No title"),
+                            "score": story.get("score", 0),
+                            "url": story.get("url", ""),
+                        }
+                    )
+
+            print(f"[HN] Fetched {len(stories)} stories")
+            return stories
+
+    except Exception as e:
+        print(f"[HN] Error: {e}")
+        return []
+
+
+async def fetch_ph_top_product() -> dict:
+    """获取 Product Hunt 今日 #1 产品（通过 RSS）"""
+    try:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            resp = await client.get("https://www.producthunt.com/feed")
+            if resp.status_code != 200:
+                print(f"[PH] Failed to fetch RSS: {resp.status_code}")
+                return {}
+
+            root = ET.fromstring(resp.content)
+
+            namespaces = {
+                "atom": "http://www.w3.org/2005/Atom",
+                "media": "http://search.yahoo.com/mrss/",
+            }
+
+            items = (
+                root.findall(".//item")
+                or root.findall(".//entry", namespaces)
+                or root.findall(".//{http://www.w3.org/2005/Atom}entry")
+            )
+
+            if not items:
+                print(f"[PH] No items found in RSS. Root tag: {root.tag}")
+                return {}
+
+            first_item = items[0]
+
+            title = first_item.find("title") or first_item.find(
+                "{http://www.w3.org/2005/Atom}title"
+            )
+            description = (
+                first_item.find("description")
+                or first_item.find("summary")
+                or first_item.find("{http://www.w3.org/2005/Atom}summary")
+                or first_item.find("content")
+                or first_item.find("{http://www.w3.org/2005/Atom}content")
+            )
+
+            tagline_text = ""
+            if description is not None and description.text:
+                tagline_text = re.sub(r"<[^>]+>", "", description.text).strip()
+                tagline_text = tagline_text[:100]
+
+            product = {
+                "name": title.text if title is not None else "Unknown Product",
+                "tagline": tagline_text,
+            }
+
+            print(f"[PH] Fetched product: {product['name']}")
+            return product
+
+    except Exception as e:
+        print(f"[PH] Error: {e}")
+        traceback.print_exc()
+        return {}
+
+
+# ── Briefing mode ────────────────────────────────────────────
+
+
+async def generate_briefing_insight(
+    hn_stories: list[dict],
+    ph_product: dict,
+    llm_provider: str = "deepseek",
+    llm_model: str = "deepseek-chat",
+) -> str:
+    """使用 LLM 生成行业洞察"""
+    hn_summary = "\n".join(
+        [f"- {s['title']} ({s['score']} points)" for s in hn_stories[:3]]
+    )
+    ph_summary = f"Product Hunt #1: {ph_product.get('name', 'N/A')}"
+
+    prompt = f"""你是一位科技行业分析师。根据今日 Hacker News 热榜和 Product Hunt 新品，生成一句简短的行业洞察（30字以内）。
+
+Hacker News Top 3:
+{hn_summary}
+
+{ph_summary}
+
+要求：
+1. 只输出洞察本身，不要前缀或引号
+2. 聚焦技术趋势或行业动态
+3. 语言简洁有力，适合晨间阅读"""
+
+    try:
+        insight = await _call_llm(llm_provider, llm_model, prompt, temperature=0.7)
+        print(f"[BRIEFING] Generated insight: {insight[:50]}...")
+        return insight
+    except Exception as e:
+        print(f"[BRIEFING] Failed to generate insight: {e}")
+        return "今日科技圈依然精彩，开发者们在不断探索新的可能性。"
+
+
+async def summarize_briefing_content(
+    stories: list[dict],
+    ph_product: dict,
+    llm_provider: str = "deepseek",
+    llm_model: str = "deepseek-chat",
+) -> tuple[list[dict], dict]:
+    """使用 LLM 总结 HN 和 PH 内容，使其更易读"""
+    try:
+        summarized_stories = []
+        if stories:
+            for story in stories:
+                title = story.get("title", "")
+                if not title or len(title) < 20:
+                    summarized_stories.append(story)
+                    continue
+
+                prompt = f"""
+# Role
+你是一个 Hacker News 专栏的技术编辑，擅长用最简练的中文介绍硬核技术内容。
+
+# Input
+标题：{title}
+
+# Instructions
+请根据标题判断内容类型，并生成 30 字以内的中文简介：
+1. 如果标题包含 "Show HN" 或看似一个工具/库：重点描述**它能解决什么问题**或**主要功能**。
+2. 如果是技术文章/讨论：重点概括**核心观点**或**技术领域**。
+3. 去除 "Show HN" 等前缀，直接说事。
+4. 风格要专业、通过关键词吸引开发者。
+
+# Output
+(仅输出总结内容，不要包含任何前缀)"""
+
+                summary = await _call_llm(
+                    llm_provider, llm_model, prompt, max_tokens=50, temperature=0.5
+                )
+                summary = summary.strip('"').strip("「」")
+                summarized_stories.append({**story, "summary": summary})
+
+            print(f"[BRIEFING] Summarized {len(summarized_stories)} HN stories")
+
+        summarized_ph = ph_product.copy() if ph_product else {}
+        if ph_product and ph_product.get("tagline"):
+            name = ph_product.get("name", "")
+            tagline = ph_product.get("tagline", "")
+            if len(tagline) > 30:
+                prompt = f"""
+# Role
+你是一个科技产品推荐官。
+
+# Input
+产品名称：{name}
+英文Slogan：{tagline}
+
+# Task
+请将上述英文Slogan重写为一句吸引人的中文介绍（30字以内）：
+1. **不要死板翻译**，要符合中文互联网的阅读习惯。
+2. 提炼核心卖点（如：免费、开源、自托管）。
+3. 格式示例："一款...的神器" 或 "...的最佳伴侣"。
+
+# Output
+仅输出中文介绍文本。
+"""
+
+                summary = await _call_llm(
+                    llm_provider, llm_model, prompt, max_tokens=50, temperature=0.5
+                )
+                summary = summary.strip('"').strip("「」")
+                summarized_ph["tagline_original"] = tagline
+                summarized_ph["tagline"] = summary
+                print("[BRIEFING] Summarized PH product tagline")
+
+        return summarized_stories, summarized_ph
+
+    except Exception as e:
+        print(f"[BRIEFING] Failed to summarize content: {e}")
+        return stories, ph_product
+
+
+async def generate_briefing_content(
+    llm_provider: str = "deepseek",
+    llm_model: str = "deepseek-chat",
+    summarize: bool = True,
+) -> dict:
+    """生成 BRIEFING 模式的完整内容"""
+    print("[BRIEFING] Starting content generation...")
+
+    hn_stories = await fetch_hn_top_stories(limit=3)
+    ph_product = await fetch_ph_top_product()
+
+    if not hn_stories and not ph_product:
+        print("[BRIEFING] All data sources failed, using fallback")
+        return _fallback_content("BRIEFING")
+
+    if summarize:
+        hn_stories, ph_product = await summarize_briefing_content(
+            hn_stories, ph_product, llm_provider, llm_model
+        )
+
+    insight = await generate_briefing_insight(
+        hn_stories, ph_product, llm_provider, llm_model
+    )
+
+    result = {
+        "hn_items": hn_stories if hn_stories else [{"title": "数据获取失败", "score": 0}],
+        "ph_item": ph_product if ph_product else {"name": "N/A", "tagline": ""},
+        "insight": insight,
+    }
+
+    print("[BRIEFING] Content generation complete")
+    return result
+
+
+# ── Artwall mode ─────────────────────────────────────────────
+
+
+async def generate_artwall_content(
+    date_str: str = "",
+    weather_str: str = "",
+    festival: str = "",
+    llm_provider: str = "aliyun",
+    llm_model: str = "qwen-image-max",
+) -> dict:
+    """生成 ARTWALL 模式的内容 - 使用文生图模型"""
+    print("[ARTWALL] Starting content generation...")
+
+    context_parts = []
+    if weather_str:
+        context_parts.append(f"天气：{weather_str}")
+    if festival:
+        context_parts.append(f"节日：{festival}")
+    if date_str:
+        context_parts.append(f"日期：{date_str}")
+
+    context = "，".join(context_parts) if context_parts else "今日"
+
+    title_prompt = f"""根据以下信息，生成一个富有诗意和意境的艺术作品标题（8字以内）：
+
+{context}
+
+要求：
+1. 富有诗意和意境，如山水画的题名
+2. 8字以内
+3. 意境深远，留有想象空间
+4. 只输出标题，不要其他内容"""
+
+    try:
+        artwork_title = await _call_llm("deepseek", "deepseek-chat", title_prompt)
+        artwork_title = artwork_title.strip('"').strip("「」")
+        print(f"[ARTWALL] Generated title: {artwork_title}")
+
+        image_prompt = f"""
+绘画风格：极简黑白线条艺术，现代矢量简笔画，墨水屏二值化风格。
+核心要求：线条干净流畅肯定，禁止任何水墨晕染、毛笔笔触、焦墨枯笔。
+强制约束：画面中绝对禁止出现任何汉字、英文、印章或签名，纯图像表达。
+构图：极度空灵，大量留白(Negative Space)，用最少的线条表达最多的含义，马一角构图。
+背景：纯净绝对白色(#FFFFFF)，无纸张纹理。
+意境：宁静、孤独、禅意(Zen minimalism)。
+画面内容：用几根简单的黑色线条勾勒出{artwork_title}的神韵。环境：{context}（极简暗示或留白）。
+"""
+
+        print(f"[ARTWALL] Image prompt: {image_prompt[:100]}...")
+
+        api_key = os.getenv("DASHSCOPE_API_KEY", "")
+        if not api_key or api_key.startswith("sk-your-"):
+            print("[ARTWALL] No valid DASHSCOPE_API_KEY, using fallback")
+            return {
+                "artwork_title": artwork_title,
+                "image_url": "",
+                "description": f"基于{context}创作的黑白版画",
+                "prompt": image_prompt,
+            }
+
+        if MultiModalConversation is None:
+            print("[ARTWALL] dashscope not installed, using fallback")
+            return {
+                "artwork_title": artwork_title,
+                "image_url": "",
+                "description": f"基于{context}创作的黑白版画",
+                "prompt": image_prompt,
+            }
+
+        dashscope.base_http_api_url = "https://dashscope.aliyuncs.com/api/v1"
+
+        messages = [{"role": "user", "content": [{"text": image_prompt}]}]
+
+        response = MultiModalConversation.call(
+            api_key=api_key,
+            model="qwen-image-max",
+            messages=messages,
+            result_format="message",
+            stream=False,
+            watermark=False,
+            prompt_extend=True,
+            negative_prompt="低分辨率，彩色，复杂细节，文字，标签，过度装饰，花哨元素，浓墨重彩，密集笔触",
+            size="512*512",
+        )
+
+        if response.status_code == 200:
+            image_url = response.output.choices[0].message.content[0].get("image", "")
+            print(f"[ARTWALL] Image generated: {image_url[:50]}...")
+
+            return {
+                "artwork_title": artwork_title,
+                "image_url": image_url,
+                "description": f"基于{context}创作的黑白版画",
+                "prompt": image_prompt,
+                "model_name": "qwen-image-max",
+            }
+        else:
+            print(f"[ARTWALL] Image generation failed: {response.status_code}")
+            print(f"Error: {response.code} - {response.message}")
+            return {
+                "artwork_title": artwork_title,
+                "image_url": "",
+                "description": f"基于{context}创作的黑白版画",
+                "prompt": image_prompt,
+            }
+
+    except Exception as e:
+        print(f"[ARTWALL] Failed: {e}")
+        traceback.print_exc()
+        return {
+            "artwork_title": "墨韵天成",
+            "image_url": "",
+            "description": "今日艺术作品",
+            "prompt": "",
+        }
+
+
+# ── Recipe mode ──────────────────────────────────────────────
+
+
+async def generate_recipe_content(
+    llm_provider: str = "deepseek",
+    llm_model: str = "deepseek-chat",
+) -> dict:
+    """生成 RECIPE 模式的内容 - 早中晚三餐方案"""
+    print("[RECIPE] Starting content generation...")
+
+    month = datetime.datetime.now().month
+
+    season_map = {
+        1: "大寒·一月",
+        2: "立春·二月",
+        3: "惊蛰·三月",
+        4: "清明·四月",
+        5: "立夏·五月",
+        6: "芒种·六月",
+        7: "小暑·七月",
+        8: "立秋·八月",
+        9: "白露·九月",
+        10: "寒露·十月",
+        11: "立冬·十一月",
+        12: "大雪·十二月",
+    }
+
+    prompt = f"""你是一位营养师。根据当前月份（{month}月），推荐一套荤素搭配的早中晚三餐方案。
+
+要求：
+1. 早餐：简单清淡，如粥+蛋+小菜
+2. 午餐：1荤+1素+主食
+3. 晚餐：1荤+1素+汤/主食
+4. 营养均衡标注（如：蛋白质✓ 膳食纤维✓ 维生素C✓）
+
+用 JSON 格式输出：
+{{
+  "breakfast": "早餐内容（如：小米南瓜粥·水煮蛋·凉拌菠菜）",
+  "lunch": {{
+    "meat": "荤菜名",
+    "veg": "素菜名",
+    "staple": "主食名"
+  }},
+  "dinner": {{
+    "meat": "荤菜名",
+    "veg": "素菜名",
+    "staple": "汤/主食名"
+  }},
+  "nutrition": "营养标注（如：蛋白质✓ 膳食纤维✓ 维生素C✓ 铁✓）"
+}}
+
+只输出 JSON，不要其他内容。"""
+
+    try:
+        text = await _call_llm(llm_provider, llm_model, prompt)
+        cleaned = _clean_json_response(text)
+        data = json.loads(cleaned)
+        print("[RECIPE] Generated meal plan")
+
+        return {
+            "season": season_map.get(month, f"{month}月"),
+            "breakfast": data.get("breakfast", "燕麦牛奶粥·茶叶蛋·凉拌黑木耳"),
+            "lunch": data.get(
+                "lunch",
+                {"meat": "番茄炖牛腩", "veg": "清炒芥兰", "staple": "白米饭"},
+            ),
+            "dinner": data.get(
+                "dinner",
+                {"meat": "清蒸鲈鱼", "veg": "蒜蓉西兰花", "staple": "紫菜蛋花汤"},
+            ),
+            "nutrition": data.get("nutrition", "蛋白质✓ 膳食纤维✓ 维生素C✓ 铁✓"),
+        }
+
+    except Exception as e:
+        print(f"[RECIPE] Failed: {e}")
+        traceback.print_exc()
+        return {
+            "season": season_map.get(month, f"{month}月"),
+            "breakfast": "燕麦牛奶粥·茶叶蛋·凉拌黑木耳",
+            "lunch": {"meat": "番茄炖牛腩", "veg": "清炒芥兰", "staple": "白米饭"},
+            "dinner": {"meat": "清蒸鲈鱼", "veg": "蒜蓉西兰花", "staple": "紫菜蛋花汤"},
+            "nutrition": "蛋白质✓ 膳食纤维✓ 维生素C✓ 铁✓",
+        }
+
+
+# ── Fitness mode ─────────────────────────────────────────────
+
+
+async def generate_fitness_content(
+    llm_provider: str = "deepseek",
+    llm_model: str = "deepseek-chat",
+) -> dict:
+    """生成 FITNESS 模式的内容"""
+    print("[FITNESS] Starting content generation...")
+
+    prompt = """你是一位健身教练。推荐一套简单的健身计划，用 JSON 格式输出：
+
+{
+  "workout_name": "训练名称（如：晨间拉伸、核心训练）",
+  "duration": "总时长（如：15分钟）",
+  "exercises": [
+    {"name": "动作名称", "reps": "次数/时长"},
+    {"name": "动作名称", "reps": "次数/时长"},
+    {"name": "动作名称", "reps": "次数/时长"},
+    {"name": "动作名称", "reps": "次数/时长"},
+    {"name": "动作名称", "reps": "次数/时长"}
+  ],
+  "tip": "健康提示（30字以内）"
+}
+
+要求：
+1. 动作简单，适合居家训练
+2. 不需要器械
+3. 只输出 JSON，不要其他内容"""
+
+    try:
+        text = await _call_llm(llm_provider, llm_model, prompt)
+        cleaned = _clean_json_response(text)
+        data = json.loads(cleaned)
+        print(f"[FITNESS] Generated: {data.get('workout_name', '')}")
+
+        return {
+            "workout_name": data.get("workout_name", "晨间拉伸"),
+            "duration": data.get("duration", "15分钟"),
+            "exercises": data.get(
+                "exercises",
+                [
+                    {"name": "颈部拉伸", "reps": "10次"},
+                    {"name": "肩部环绕", "reps": "15次"},
+                    {"name": "腰部扭转", "reps": "20次"},
+                    {"name": "腿部拉伸", "reps": "30秒"},
+                    {"name": "深呼吸", "reps": "5次"},
+                ],
+            ),
+            "tip": data.get("tip", "运动前充分热身，避免受伤。保持规律作息，健康生活。"),
+        }
+
+    except Exception as e:
+        print(f"[FITNESS] Failed: {e}")
+        return {
+            "workout_name": "晨间拉伸",
+            "duration": "15分钟",
+            "exercises": [
+                {"name": "颈部拉伸", "reps": "10次"},
+                {"name": "肩部环绕", "reps": "15次"},
+                {"name": "腰部扭转", "reps": "20次"},
+                {"name": "腿部拉伸", "reps": "30秒"},
+                {"name": "深呼吸", "reps": "5次"},
+            ],
+            "tip": "运动前充分热身，避免受伤。保持规律作息，健康生活。",
+        }

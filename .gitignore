@@ -205,3 +205,28 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# ==========================================
+# InkSight Project-specific
+# ==========================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE
+.vscode/
+.idea/
+
+# SQLite database files
+*.db
+*.sqlite
+
+# PlatformIO build artifacts
+.pio/
+
+# Internal documents (not for public release)
+需求文档.md
+API 接口文档.md
+PROJECT_STATUS.md

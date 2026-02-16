@@ -1,0 +1,21 @@
+# Vercel
+.vercel
+
+# Environment variables
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# SQLite database
+*.db
+*.sqlite
+
+# Test cache and output files
+test_*_cache.json
+test_*_output.png
+
+# macOS
+.DS_Store

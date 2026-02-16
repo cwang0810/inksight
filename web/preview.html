@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>InkSight — Preview Console</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #fafafa;
+      --card-bg: #ffffff;
+      --border: #e5e5e5;
+      --text: #1a1a1a;
+      --text-secondary: #737373;
+      --accent: #171717;
+      --accent-hover: #404040;
+      --green: #16a34a;
+      --green-bg: #f0fdf4;
+      --green-border: #bbf7d0;
+      --red: #dc2626;
+      --radius: 10px;
+      --shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      min-height: 100vh;
+    }
+
+    .container {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 32px 24px;
+    }
+
+    /* Header */
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 28px;
+    }
+    .header h1 {
+      font-size: 1.35rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+    .header h1 span { color: var(--text-secondary); font-weight: 400; }
+    .health-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.75rem;
+      font-weight: 500;
+      color: var(--green);
+      background: var(--green-bg);
+      border: 1px solid var(--green-border);
+      padding: 5px 12px;
+      border-radius: 16px;
+    }
+    .health-dot {
+      width: 6px; height: 6px;
+      background: var(--green);
+      border-radius: 50%;
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    /* Layout */
+    .main-layout {
+      display: grid;
+      grid-template-columns: 1fr 280px;
+      gap: 24px;
+      align-items: start;
+    }
+    @media (max-width: 720px) {
+      .main-layout { grid-template-columns: 1fr; }
+    }
+
+    /* Card */
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    .card-header {
+      padding: 12px 16px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-secondary);
+      border-bottom: 1px solid var(--border);
+      background: #fafafa;
+    }
+    .card-body { padding: 16px; }
+
+    /* Preview Area */
+    .preview-area { text-align: center; }
+    .screen-frame {
+      display: inline-block;
+      background: #fff;
+      border: 2px solid #d4d4d4;
+      border-radius: 6px;
+      padding: 8px;
+      box-shadow: inset 0 0 0 1px #e5e5e5, 0 4px 12px rgba(0,0,0,0.08);
+      position: relative;
+    }
+    .screen-frame img {
+      display: block;
+      width: 400px;
+      height: 300px;
+      /* image-rendering: pixelated; */
+      background: #fff;
+    }
+    .screen-label {
+      margin-top: 10px;
+      font-size: 0.7rem;
+      color: var(--text-secondary);
+      letter-spacing: 0.03em;
+    }
+
+    /* Loading overlay */
+    .loading-overlay {
+      position: absolute;
+      inset: 8px;
+      background: rgba(255,255,255,0.85);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s;
+    }
+    .loading-overlay.active { opacity: 1; pointer-events: auto; }
+    .spinner {
+      width: 28px; height: 28px;
+      border: 2.5px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .loading-text { font-size: 0.75rem; color: var(--text-secondary); }
+
+    /* Controls */
+    .form-group { margin-bottom: 14px; }
+    .form-group:last-child { margin-bottom: 0; }
+    .form-label {
+      display: block;
+      font-size: 0.72rem;
+      font-weight: 600;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-bottom: 6px;
+    }
+
+    /* Persona buttons */
+    .persona-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+    }
+    .persona-btn {
+      padding: 8px 4px;
+      font-size: 0.78rem;
+      font-weight: 600;
+      font-family: inherit;
+      border: 1.5px solid var(--border);
+      border-radius: 7px;
+      background: #fff;
+      cursor: pointer;
+      transition: all 0.15s;
+      color: var(--text);
+      text-align: center;
+    }
+    .persona-btn:hover { border-color: #a3a3a3; background: #fafafa; }
+    .persona-btn.active {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: #fff;
+    }
+    .persona-btn .label { display: block; font-size: 0.65rem; font-weight: 400; opacity: 0.7; margin-top: 1px; }
+    .persona-btn.active .label { opacity: 0.85; }
+
+    /* Voltage slider */
+    .range-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    input[type="range"] {
+      -webkit-appearance: none;
+      flex: 1;
+      height: 4px;
+      background: var(--border);
+      border-radius: 2px;
+      outline: none;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 16px; height: 16px;
+      background: var(--accent);
+      border-radius: 50%;
+      cursor: pointer;
+    }
+    .range-value {
+      font-size: 0.82rem;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      min-width: 42px;
+      text-align: right;
+    }
+    .range-labels {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.62rem;
+      color: #a3a3a3;
+      margin-top: 3px;
+    }
+
+    /* Generate button */
+    .btn-generate {
+      display: block;
+      width: 100%;
+      padding: 10px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      font-family: inherit;
+      color: #fff;
+      background: var(--accent);
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background 0.15s;
+      margin-top: 16px;
+    }
+    .btn-generate:hover { background: var(--accent-hover); }
+    .btn-generate:active { transform: scale(0.98); }
+    .btn-generate:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* Info panel */
+    .info-grid {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 4px 10px;
+      font-size: 0.75rem;
+    }
+    .info-label { color: var(--text-secondary); font-weight: 500; }
+    .info-value { font-variant-numeric: tabular-nums; }
+    .info-value.error { color: var(--red); }
+
+    /* Auto mode tag */
+    .auto-tag {
+      display: inline-block;
+      font-size: 0.6rem;
+      font-weight: 600;
+      background: #f5f5f5;
+      color: #737373;
+      padding: 1px 5px;
+      border-radius: 3px;
+      margin-left: 4px;
+      vertical-align: middle;
+    }
+
+    /* E-ink flash animation */
+    @keyframes eink-flash {
+      0% { filter: invert(0); }
+      15% { filter: invert(1); }
+      30% { filter: invert(0); }
+      45% { filter: invert(0.6); }
+      60% { filter: invert(0); }
+      100% { filter: invert(0); }
+    }
+    .screen-frame.flash img {
+      animation: eink-flash 0.5s ease;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <div class="header">
+      <h1>InkSight <span>Preview Console</span></h1>
+      <span class="health-badge" id="healthBadge">
+        <span class="health-dot"></span>
+        <span id="healthText">Checking...</span>
+      </span>
+    </div>
+
+    <!-- Main -->
+    <div class="main-layout">
+      <!-- Left: Preview -->
+      <div>
+        <div class="card">
+          <div class="card-header">Render Output</div>
+          <div class="card-body preview-area">
+            <div class="screen-frame" id="screenFrame">
+              <img id="previewImg" src="" alt="Preview"
+                   style="background:#f5f5f5;">
+              <div class="loading-overlay" id="loadingOverlay">
+                <div class="spinner"></div>
+                <div class="loading-text">Rendering...</div>
+              </div>
+            </div>
+            <div class="screen-label">400 × 300 · 1-bit monochrome · pixelated</div>
+          </div>
+        </div>
+
+        <!-- Response Info -->
+        <div class="card" style="margin-top: 12px;">
+          <div class="card-header">Response Info</div>
+          <div class="card-body">
+            <div class="info-grid" id="infoGrid">
+              <span class="info-label">Status</span>
+              <span class="info-value" id="infoStatus">—</span>
+              <span class="info-label">Persona</span>
+              <span class="info-value" id="infoPersona">—</span>
+              <span class="info-label">Render Time</span>
+              <span class="info-value" id="infoTime">—</span>
+              <span class="info-label">Image Size</span>
+              <span class="info-value" id="infoSize">—</span>
+              <span class="info-label">Request URL</span>
+              <span class="info-value" id="infoUrl" style="word-break:break-all;">—</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right: Controls -->
+      <div>
+        <div class="card">
+          <div class="card-header">Controls</div>
+          <div class="card-body">
+            <!-- Persona -->
+            <div class="form-group">
+              <label class="form-label">Persona Mode</label>
+              <div class="persona-grid">
+                <button class="persona-btn" data-persona="AUTO" onclick="selectPersona(this)">
+                  AUTO<span class="label">自动选择</span>
+                </button>
+                <button class="persona-btn" data-persona="STOIC" onclick="selectPersona(this)">
+                  STOIC<span class="label">斯多葛</span>
+                </button>
+                <button class="persona-btn" data-persona="ROAST" onclick="selectPersona(this)">
+                  ROAST<span class="label">毒舌吐槽</span>
+                </button>
+                <button class="persona-btn" data-persona="ZEN" onclick="selectPersona(this)">
+                  ZEN<span class="label">禅意大字</span>
+                </button>
+                <button class="persona-btn active" data-persona="DAILY" onclick="selectPersona(this)">
+                  DAILY<span class="label">每日推荐</span>
+                </button>
+                <button class="persona-btn" data-persona="BRIEFING" onclick="selectPersona(this)">
+                  BRIEFING<span class="label">AI 简报</span>
+                </button>
+                <button class="persona-btn" data-persona="ARTWALL" onclick="selectPersona(this)">
+                  ARTWALL<span class="label">AI 画廊</span>
+                </button>
+                <button class="persona-btn" data-persona="RECIPE" onclick="selectPersona(this)">
+                  RECIPE<span class="label">每日食谱</span>
+                </button>
+                <button class="persona-btn" data-persona="FITNESS" onclick="selectPersona(this)">
+                  FITNESS<span class="label">健身计划</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Voltage -->
+            <div class="form-group">
+              <label class="form-label">Battery Voltage</label>
+              <div class="range-row">
+                <input type="range" id="voltageSlider" min="2.80" max="3.50" step="0.01" value="3.30">
+                <span class="range-value" id="voltageValue">3.30V</span>
+              </div>
+              <div class="range-labels">
+                <span>2.80V (Dead)</span>
+                <span>3.50V (Full)</span>
+              </div>
+            </div>
+
+            <button class="btn-generate" id="generateBtn" onclick="generate()">
+              Generate Preview
+            </button>
+          </div>
+        </div>
+
+        <!-- Quick Presets -->
+        <div class="card" style="margin-top: 12px;">
+          <div class="card-header">Quick Presets</div>
+          <div class="card-body" style="display:flex; flex-wrap:wrap; gap:6px;">
+            <button class="persona-btn" style="flex:1;min-width:70px;font-size:0.72rem;padding:6px;"
+                    onclick="applyPreset('full')">🔋 Full</button>
+            <button class="persona-btn" style="flex:1;min-width:70px;font-size:0.72rem;padding:6px;"
+                    onclick="applyPreset('low')">🪫 Low</button>
+            <button class="persona-btn" style="flex:1;min-width:70px;font-size:0.72rem;padding:6px;"
+                    onclick="applyPreset('all')">🔄 All Modes</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // State
+    let selectedPersona = 'DAILY';
+    let isLoading = false;
+
+    // DOM refs
+    const previewImg = document.getElementById('previewImg');
+    const loadingOverlay = document.getElementById('loadingOverlay');
+    const screenFrame = document.getElementById('screenFrame');
+    const voltageSlider = document.getElementById('voltageSlider');
+    const voltageValue = document.getElementById('voltageValue');
+    const generateBtn = document.getElementById('generateBtn');
+
+    // Voltage slider
+    voltageSlider.addEventListener('input', () => {
+      voltageValue.textContent = parseFloat(voltageSlider.value).toFixed(2) + 'V';
+    });
+
+    // Persona selection
+    function selectPersona(btn) {
+      document.querySelectorAll('.persona-grid .persona-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      selectedPersona = btn.dataset.persona;
+    }
+
+    // Generate preview
+    async function generate() {
+      if (isLoading) return;
+      isLoading = true;
+      generateBtn.disabled = true;
+      loadingOverlay.classList.add('active');
+
+      const v = parseFloat(voltageSlider.value).toFixed(2);
+      const persona = selectedPersona === 'AUTO' ? '' : selectedPersona;
+      let url = `/api/preview?v=${v}`;
+      if (persona) url += `&persona=${persona}`;
+
+      document.getElementById('infoUrl').textContent = url;
+      document.getElementById('infoStatus').textContent = '⏳ Loading...';
+      document.getElementById('infoStatus').className = 'info-value';
+      document.getElementById('infoPersona').textContent = persona || 'AUTO';
+      document.getElementById('infoTime').textContent = '...';
+      document.getElementById('infoSize').textContent = '...';
+
+      const startTime = performance.now();
+
+      try {
+        const resp = await fetch(url);
+        const elapsed = Math.round(performance.now() - startTime);
+        const blob = await resp.blob();
+
+        if (resp.ok) {
+          const imgUrl = URL.createObjectURL(blob);
+          previewImg.src = imgUrl;
+          document.getElementById('infoStatus').textContent = `✓ ${resp.status} OK`;
+          // E-ink flash animation
+          screenFrame.classList.add('flash');
+          setTimeout(() => screenFrame.classList.remove('flash'), 500);
+        } else {
+          document.getElementById('infoStatus').textContent = `✗ ${resp.status} Error`;
+          document.getElementById('infoStatus').className = 'info-value error';
+        }
+
+        document.getElementById('infoTime').textContent = `${elapsed}ms`;
+        document.getElementById('infoSize').textContent = `${(blob.size / 1024).toFixed(1)} KB`;
+        document.getElementById('infoPersona').textContent = persona || 'AUTO → (server decides)';
+
+      } catch (err) {
+        document.getElementById('infoStatus').textContent = `✗ Network Error`;
+        document.getElementById('infoStatus').className = 'info-value error';
+        document.getElementById('infoTime').textContent = '—';
+      }
+
+      loadingOverlay.classList.remove('active');
+      generateBtn.disabled = false;
+      isLoading = false;
+    }
+
+    // Presets
+    async function applyPreset(preset) {
+      if (preset === 'full') {
+        voltageSlider.value = 3.45;
+        voltageValue.textContent = '3.45V';
+        generate();
+      } else if (preset === 'low') {
+        voltageSlider.value = 3.10;
+        voltageValue.textContent = '3.10V';
+        generate();
+      } else if (preset === 'all') {
+        // Cycle through all modes
+        const modes = ['STOIC', 'ROAST', 'ZEN', 'DAILY', 'BRIEFING', 'ARTWALL', 'RECIPE', 'FITNESS'];
+        for (const mode of modes) {
+          selectedPersona = mode;
+          // Highlight active button
+          document.querySelectorAll('.persona-grid .persona-btn').forEach(b => {
+            b.classList.toggle('active', b.dataset.persona === mode);
+          });
+          await generate();
+          if (mode !== modes[modes.length - 1]) {
+            await new Promise(r => setTimeout(r, 800));
+          }
+        }
+      }
+    }
+
+    // Health check on load
+    async function checkHealth() {
+      try {
+        const resp = await fetch('/api/health');
+        const data = await resp.json();
+        document.getElementById('healthText').textContent = `v${data.version} · OK`;
+        document.getElementById('healthBadge').style.color = 'var(--green)';
+        document.getElementById('healthBadge').style.borderColor = 'var(--green-border)';
+        document.getElementById('healthBadge').style.background = 'var(--green-bg)';
+      } catch {
+        document.getElementById('healthText').textContent = 'Offline';
+        document.getElementById('healthBadge').style.color = 'var(--red)';
+        document.getElementById('healthBadge').style.borderColor = '#fecaca';
+        document.getElementById('healthBadge').style.background = '#fef2f2';
+      }
+    }
+
+    // Init
+    checkHealth();
+    // Auto-generate on load
+    generate();
+  </script>
+</body>
+</html>
+
